@@ -26,6 +26,7 @@ import Data.Sequence as Seq
 import Data.Text.Lazy (Text, isInfixOf, isPrefixOf, last, pack, take)
 import Database.Requirement (Modifier (..), Req (..))
 import DynamicGraphs.CourseFinder (lookupCourses)
+import DynamicGraphs.GraphNodeUtils (formatModOr, maybeHead, paddingSpaces, stringifyModAnd)
 import DynamicGraphs.GraphOptions (GraphOptions (..), defaultGraphOptions)
 import Prelude hiding (last)
 
@@ -50,9 +51,9 @@ sampleGraph :: DotGraph Text
 sampleGraph = fst $ State.runState (reqsToGraph
     defaultGraphOptions
     [("MAT237H1", J "MAT137H1" ""),
-    ("MAT133H1", NONE),
-    ("CSC148H1", REQAND [J "CSC108H1" "", J "CSC104H1" ""]),
-    ("CSC265H1", REQAND [J "CSC148H1" "", J "CSC236H1" ""])
+    ("MAT133H1", None),
+    ("CSC148H1", ReqAnd [J "CSC108H1" "", J "CSC104H1" ""]),
+    ("CSC265H1", ReqAnd [J "CSC148H1" "", J "CSC236H1" ""])
     ])
     (GeneratorState 0 Map.empty)
 
@@ -60,7 +61,7 @@ sampleGraph = fst $ State.runState (reqsToGraph
 
 -- | Convert a list of coursenames and requirements to a DotGraph object for
 --  drawing using Dot. Also prunes any repeated edges that arise from
---  multiple Reqs using the same GRADE requirement
+--  multiple Reqs using the same Grade requirement
 reqsToGraph :: GraphOptions -> [(Text, Req)] -> State GeneratorState (DotGraph Text)
 reqsToGraph options reqs = do
     allStmts <- concatUnique <$> mapM (reqToStmts options) reqs
@@ -117,7 +118,7 @@ reqToStmtsTree :: GraphOptions -- ^ Options to toggle dynamic graph
                -> Text -- ^ Name of parent course
                -> Req  -- ^ Requirement to generate dep tree for
                -> State GeneratorState (Tree [DotStatement Text])
-reqToStmtsTree _ _ NONE = return (Node [] [])
+reqToStmtsTree _ _ None = return (Node [] [])
 reqToStmtsTree options parentID (J name2 _) = do
     let name = pack name2
     if pickCourse options name then do
@@ -127,7 +128,7 @@ reqToStmtsTree options parentID (J name2 _) = do
     else
         return (Node [] [])
 -- Two or more required prerequisites.
-reqToStmtsTree options parentID (REQAND reqs) = do
+reqToStmtsTree options parentID (ReqAnd reqs) = do
     andNode <- makeBool "and"
     edge <- makeEdge (nodeID andNode) parentID Nothing
     prereqStmts <- mapM (reqToStmtsTree options (nodeID andNode)) reqs
@@ -140,7 +141,7 @@ reqToStmtsTree options parentID (REQAND reqs) = do
             return $ Node [DN node, DE newEdge] xs
         _ -> return $ Node [DN andNode, DE edge] filteredStmts
 -- A choice from two or more prerequisites.
-reqToStmtsTree options parentID (REQOR reqs) = do
+reqToStmtsTree options parentID (ReqOr reqs) = do
     orNode <- makeBool "or"
     edge <- makeEdge (nodeID orNode) parentID Nothing
     prereqStmts <- mapM (reqToStmtsTree options (nodeID orNode)) reqs
@@ -154,7 +155,7 @@ reqToStmtsTree options parentID (REQOR reqs) = do
         _  -> return $ Node [DN orNode, DE edge] filteredStmts
 
 -- A prerequisite with a grade requirement.
-reqToStmtsTree options parentID (GRADE description req) = do
+reqToStmtsTree options parentID (Grade description req) = do
     if includeGrades options then do
         Node root rest <- reqToStmtsTree options parentID req
         case root of
@@ -169,7 +170,7 @@ reqToStmtsTree options parentID (GRADE description req) = do
     else reqToStmtsTree options parentID req
 
 -- A raw string description of a prerequisite.
-reqToStmtsTree options parentID (RAW rawText) =
+reqToStmtsTree options parentID (Raw rawText) =
     if not (includeRaws options) || "High school" `isInfixOf` pack rawText || rawText == ""
         then return $ Node [] []
         else do
@@ -178,51 +179,67 @@ reqToStmtsTree options parentID (RAW rawText) =
             return $ Node [DN prereq, DE edge] []
 
 --A prerequisite concerning a given number of earned credits
-reqToStmtsTree _ parentID (FCES creds (REQUIREMENT (RAW ""))) = do
+reqToStmtsTree _ parentID (Fces creds (Requirement (Raw ""))) = do
     fceNode <- makeNode (pack $ show creds ++ " FCEs") Nothing
     edge <- makeEdge (nodeID fceNode) parentID Nothing
     return $ Node [DN fceNode, DE edge] []
 
 --A prerequisite concerning a given number of earned credits in some raw string
-reqToStmtsTree _ parentID (FCES creds (REQUIREMENT (RAW text))) = do
-    fceNode <- makeNode (pack $ show creds ++ " FCEs from " ++ text ++ paddingSpaces) Nothing
+reqToStmtsTree _ parentID (Fces creds (Requirement (Raw text))) = do
+    fceNode <- makeNode (pack $ show creds ++ " FCEs from " ++ text ++ paddingSpaces 18) Nothing
     edge <- makeEdge (nodeID fceNode) parentID Nothing
     return $ Node [DN fceNode, DE edge] []
 
 --A prerequisite concerning a given number of earned credits in some course(s)
-reqToStmtsTree options parentID (FCES creds (REQUIREMENT req)) = do
+reqToStmtsTree options parentID (Fces creds (Requirement req)) = do
     fceNode <- makeNode (pack $ show creds ++ " FCEs") Nothing
     edge <- makeEdge (nodeID fceNode) parentID Nothing
     prereqStmts <- reqToStmtsTree options (nodeID fceNode) req
     return $ Node [DN fceNode, DE edge] [prereqStmts]
 
 --A prerequisite concerning a given number of earned credits in a department
-reqToStmtsTree _ parentID (FCES creds (DEPARTMENT dept)) = do
+reqToStmtsTree _ parentID (Fces creds (Department dept)) = do
     fceNode <- makeNode (pack $ show creds ++ " " ++ dept ++ " FCEs") Nothing
     edge <- makeEdge (nodeID fceNode) parentID Nothing
     return $ Node [DN fceNode, DE edge] []
 
 --A prerequisite concerning a given number of earned credits at a given level
-reqToStmtsTree _ parentID (FCES creds (LEVEL level)) = do
-    fceNode <- makeNode (pack $ show creds ++ " FCEs at the " ++ level ++ " level" ++ paddingSpaces) Nothing
+reqToStmtsTree _ parentID (Fces creds (Level level)) = do
+    fceNode <- makeNode (pack $ show creds ++ " FCEs at the " ++ level ++ " level" ++ paddingSpaces 18) Nothing
     edge <- makeEdge (nodeID fceNode) parentID Nothing
     return $ Node [DN fceNode, DE edge] []
 
 -- | A prerequisite concerning a given number of earned credits with a combination
--- | of some modifiers related through MODANDs
+-- | of some modifiers related through ModAnds
 -- | Assumes each modifier constructor appears in modifiers at most once
-reqToStmtsTree options parentID (FCES creds (MODAND modifiers)) = do
-    fceNode <- makeNode (pack $ stringifyModand creds modifiers ++ paddingSpaces) Nothing
+-- | The ModOr constructor may appear more than once, but each occurrence
+-- | of ModOr contains exactly one constructor for all its elements
+-- | and such constructor does not appear anywhere else in ModAnd
+reqToStmtsTree options parentID (Fces creds (ModAnd modifiers)) = do
+    fceNode <- makeNode (pack $ stringifyModAnd creds modifiers ++ paddingSpaces 10) Nothing
     edge <- makeEdge (nodeID fceNode) parentID Nothing
 
-    case maybeHead [req | REQUIREMENT req <- modifiers] of
+    case maybeHead [req | Requirement req <- modifiers] of
+        Nothing -> return $ Node [DN fceNode, DE edge] []
+        Just req -> do
+            prereqStmts <- reqToStmtsTree options (nodeID fceNode) req
+            return $ Node [DN fceNode, DE edge] [prereqStmts]
+
+-- | A prerequisite concerning a given number of earned credits with a combination
+-- | of some modifiers related through a ModOr
+-- | Assumes all modifiers in the list have the same constructor
+reqToStmtsTree options parentID (Fces creds (ModOr modifiers)) = do
+    fceNode <- makeNode (pack $ formatModOr creds modifiers) Nothing
+    edge <- makeEdge (nodeID fceNode) parentID Nothing
+
+    case maybeHead [req | Requirement req <- modifiers] of
         Nothing -> return $ Node [DN fceNode, DE edge] []
         Just req -> do
             prereqStmts <- reqToStmtsTree options (nodeID fceNode) req
             return $ Node [DN fceNode, DE edge] [prereqStmts]
 
 -- A program requirement
-reqToStmtsTree _ parentID (PROGRAM prog) = do
+reqToStmtsTree _ parentID (Program prog) = do
     -- FIXME: weird width calculation from the library with the prog
     -- so we padded the string with prog again to work around it
     progNode <- makeNode (pack $ "Enrolled in " ++ prog ++ Prelude.replicate (Prelude.length prog) ' ') Nothing
@@ -230,35 +247,10 @@ reqToStmtsTree _ parentID (PROGRAM prog) = do
     return $ Node [DN progNode, DE edge] []
 
 -- a cGPA requirement
-reqToStmtsTree _ parentID (GPA float string) = do
+reqToStmtsTree _ parentID (Gpa float string) = do
     gpaNode <- makeNode (pack $ "Minimum cGPA of " ++ show float ++ string) Nothing
     edge <-  makeEdge (nodeID gpaNode) parentID Nothing
     return $ Node [DN gpaNode, DE edge] []
-
--- | Converts the given number of credits and list of modifiers into a string
--- | in readable English
--- | Assumes each modifier constructor appears in modifiers at most once
-stringifyModand :: Float -> [Modifier] -> String
-stringifyModand creds modifiers = let
-    dept = maybeHead [x | DEPARTMENT x <- modifiers]
-    deptFormatted = case dept of
-        Nothing -> ""
-        Just x -> ' ':x
-    level = maybeHead [x | LEVEL x <- modifiers]
-    levelFormatted = case level of
-        Nothing -> ""
-        Just x -> " at the " ++ x ++ " level"
-    raw = maybeHead [x | REQUIREMENT (RAW x) <- modifiers]
-    rawFormatted = case raw of
-        Nothing -> ""
-        Just x -> " from " ++ x
-
-    in show creds ++ deptFormatted ++ " FCEs" ++ levelFormatted ++ rawFormatted
-
--- | Returns Just the first element of the given list, or Nothing if the list is empty
-maybeHead :: [a] -> Maybe a
-maybeHead [] = Nothing
-maybeHead (x:_) = Just x
 
 prefixedByOneOf :: Text -> [Text] -> Bool
 prefixedByOneOf name = any (`isPrefixOf` name)
@@ -354,6 +346,3 @@ edgeAttrs :: GlobalAttributes
 edgeAttrs = EdgeAttrs [
     ArrowHead (AType [(ArrMod FilledArrow BothSides, Normal)])
     ]
-
-paddingSpaces :: [Char]
-paddingSpaces = Prelude.replicate 18 ' '
