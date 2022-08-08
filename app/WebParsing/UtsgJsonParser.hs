@@ -22,14 +22,12 @@ coursesJson = "courses.json"
 -- | Parse all timetable data.
 getAllCourses :: IO ()
 getAllCourses = do
-    -- orgs <- getOrgs
     runSqlite databasePath insertAllMeetings
 
 -- | Retrieve and store all timetable data for the given department.
 insertAllMeetings :: {- T.Text -> -} SqlPersistM ()
 insertAllMeetings {- org -} = do
     liftIO . print "parsing JSON data"
-    -- resp <- liftIO . simpleHttp $ T.unpack (T.append timetableApiUrl org) -- where we are getting a network connection error
     resp <- liftIO $ decodeFileStrict coursesJson
     let coursesLst :: Maybe (HM.HashMap T.Text (Maybe DB)) = resp
         courseData = maybe [] (map dbData . catMaybes . HM.elems) coursesLst
